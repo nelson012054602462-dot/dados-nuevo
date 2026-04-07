@@ -5,7 +5,6 @@ const {
 } = require("@whiskeysockets/baileys");
 
 const { Boom } = require("@hapi/boom");
-const qrcode = require("qrcode-terminal");
 const fs = require("fs");
 
 // =========================
@@ -54,7 +53,7 @@ function applyPrecision(value, precision) {
 }
 
 // =========================
-// SESIÓN (PERSISTENTE)
+// SESIÓN
 // =========================
 
 const SESSION_FILE = "session.json";
@@ -92,8 +91,9 @@ async function startBot() {
     const { connection, lastDisconnect, qr } = update;
 
     if (qr) {
-      console.log("📱 Escanea este QR:\n");
-      qrcode.generate(qr, { small: false });
+      const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(qr)}`;
+      console.log("📱 Escanea este QR:");
+      console.log(qrUrl);
     }
 
     if (connection === "open") {
