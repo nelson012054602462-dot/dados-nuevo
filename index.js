@@ -8,6 +8,10 @@ const { Boom } = require("@hapi/boom");
 const qrcode = require("qrcode-terminal");
 const fs = require("fs");
 
+// =========================
+// DATOS
+// =========================
+
 const DAMAGE_TABLES = {
   d6: [5,10,15,20,25,30],
   d8: [10,20,25,30,35,40,50,60],
@@ -23,6 +27,10 @@ const D4_EFFECTS = [
   "Efectividad completa"
 ];
 
+// =========================
+// FUNCIONES
+// =========================
+
 function rollDice(sides) {
   return Math.floor(Math.random() * sides) + 1;
 }
@@ -37,7 +45,7 @@ function getD20Result(value) {
 
 function calculateDamage(dice, roll) {
   const table = DAMAGE_TABLES[dice];
-  return table ? table[roll - 1] : null;
+  return table ? table[roll - 1] : 0;
 }
 
 function applyPrecision(value, precision) {
@@ -45,19 +53,41 @@ function applyPrecision(value, precision) {
   return Math.max(1, Math.min(20, result));
 }
 
+// =========================
+// SESIÓN (PERSISTENTE)
+// =========================
+
+const SESSION_FILE = "session.json";
+
+function saveSession(state) {
+  try {
+    fs.writeFileSync(SESSION_FILE, JSON.stringify(state, null, 2));
+  } catch (e) {
+    console.log("Error guardando sesión:", e);
+  }
+}
+
+// =========================
+// BOT
+// =========================
+
 async function startBot() {
-let savedState = await getAuthState();
 
-const { state, saveCreds } = await useMultiFileAuthState("auth");
-
-sock.ev.on("creds.update", () => {
-  saveCreds();
-  saveAuthState(state);
-});
+  const { state, saveCreds } = await useMultiFileAuthState("auth");
   const { version } = await fetchLatestBaileysVersion();
 
-  const sock = makeWASocket({ auth: state, version });
+  const sock = makeWASocket({
+    auth: state,
+    version
+  });
 
+  // Guardar sesión
+  sock.ev.on("creds.update", () => {
+    saveCreds();
+    saveSession(state);
+  });
+
+  // Conexión
   sock.ev.on("connection.update", (update) => {
     const { connection, lastDisconnect, qr } = update;
 
@@ -80,7 +110,9 @@ sock.ev.on("creds.update", () => {
     }
   });
 
-  sock.ev.on("creds.update", saveCreds);
+  // =========================
+  // MENSAJES
+  // =========================
 
   sock.ev.on("messages.upsert", async ({ messages }) => {
     try {
@@ -114,10 +146,9 @@ sock.ev.on("creds.update", () => {
       // =========================
       // MONEDA
       // =========================
-      if (lowerText.startsWith("!moneda") || lowerText.startsWith("!coin")) {
+      if (lowerText.startsWith("!moneda")) {
         const result = Math.random() < 0.5 ? "Cara" : "Cruz";
-        await sock.sendMessage(msg.key.remoteJid, { text: `🪙 ${result}` });
-        return;
+        return sock.sendMessage(msg.key.remoteJid, { text: `🪙 ${result}` });
       }
 
       // =========================
@@ -125,14 +156,13 @@ sock.ev.on("creds.update", () => {
       // =========================
       if (lowerText.startsWith("!d100")) {
         const roll = rollDice(100);
-        await sock.sendMessage(msg.key.remoteJid, { 
+        return sock.sendMessage(msg.key.remoteJid, {
           text: `🎲 d100: ${roll}%`
         });
-        return;
       }
 
       // =========================
-      // ATAQUE (VISUAL COMPLETO)
+      // ATAQUE
       // =========================
       if (lowerText.startsWith("!ataque")) {
 
@@ -150,10 +180,9 @@ sock.ev.on("creds.update", () => {
         }
 
         if (!damageDice) {
-          await sock.sendMessage(msg.key.remoteJid, {
+          return sock.sendMessage(msg.key.remoteJid, {
             text: "❌ Usa: !ataque d20 d10"
           });
-          return;
         }
 
         response += `⚔️ ATAQUE\n`;
@@ -163,16 +192,8 @@ sock.ev.on("creds.update", () => {
           let r1 = rollDice(20);
           let r2 = rollDice(20);
 
-          let hit = r1;
-          let tipo = "normal";
-
-          if (ventaja) {
-            hit = Math.max(r1, r2);
-            tipo = "ventaja";
-          } else if (desventaja) {
-            hit = Math.min(r1, r2);
-            tipo = "desventaja";
-          }
+          let hit = ventaja ? Math.max(r1, r2) :
+                    desventaja ? Math.min(r1, r2) : r1;
 
           let beforePrecision = hit;
           hit = applyPrecision(hit, precision);
@@ -180,7 +201,7 @@ sock.ev.on("creds.update", () => {
           response += `\n🎯 Ataque ${i+1}\n`;
           response += `Tirada: ${r1}`;
           if (ventaja || desventaja) {
-            response += ` / ${r2} (${tipo}) → ${beforePrecision}`;
+            response += ` / ${r2} → ${beforePrecision}`;
           }
           if (precision !== 0) {
             response += ` + (${precision}×3) = ${hit}`;
@@ -188,155 +209,41 @@ sock.ev.on("creds.update", () => {
           response += `\nResultado: ${getD20Result(hit)}\n`;
 
           let totalDamage = 0;
-          let damageDetails = [];
+          let details = [];
 
           for (let j = 0; j < damageCount; j++) {
             let roll = rollDice(damageDice);
-            let dmg = calculateDamage("d" + damageDice, roll) || 0;
-            damageDetails.push(`d${damageDice}:${roll}→${dmg}`);
+            let dmg = calculateDamage("d" + damageDice, roll);
+            details.push(`${roll}→${dmg}`);
             totalDamage += dmg;
           }
 
-          response += `💥 Dados: ${damageDetails.join(", ")}\n`;
-          response += `Suma base: ${totalDamage}\n`;
+          response += `💥 Dados: ${details.join(", ")}\n`;
 
           if (bonus) {
-            response += `➕ Bonus: +${bonus}\n`;
             totalDamage += bonus;
-          }
-
-          if (multiplier !== 1) {
-            response += `✖️ x${multiplier}\n`;
-            totalDamage *= multiplier;
-          }
-
-          let beforeHit = totalDamage;
-
-          if (hit <= 4) totalDamage = 0;
-          else if (hit <= 9) totalDamage = Math.floor(totalDamage / 2);
-          else if (hit >= 20) totalDamage *= 2;
-
-          if (beforeHit !== totalDamage) {
-            response += `⚙️ Ajuste d20: ${beforeHit} → ${totalDamage}\n`;
-          }
-
-          response += `🔥 Daño final: ${totalDamage}\n`;
-        }
-
-        await sock.sendMessage(msg.key.remoteJid, { text: response });
-        return;
-      }
-
-      // =========================
-      // MULTI-DADOS (VISUAL)
-      // =========================
-      if (/^!\d+d\d+/.test(lowerText)) {
-
-        const match = lowerText.match(/(\d+)d(\d+)/);
-        const count = parseInt(match[1]);
-        const sides = parseInt(match[2]);
-
-        let rolls = [];
-        let total = 0;
-        let details = [];
-        let d4Texts = [];
-
-        for (let i = 0; i < count; i++) {
-          let roll = rollDice(sides);
-          rolls.push(roll);
-
-          if (sides === 4) {
-            d4Texts.push(D4_EFFECTS[roll - 1]);
-          } else {
-            let dmg = calculateDamage("d" + sides, roll) || 0;
-            details.push(`${roll}→${dmg}`);
-            total += dmg;
-          }
-        }
-
-        response += `🎲 ${count}d${sides}\n`;
-        response += `Tiradas: ${rolls.join(", ")}\n`;
-
-        if (sides === 4) {
-          response += `🎯\n- ${d4Texts.join("\n- ")}`;
-        } else {
-          response += `Detalle: ${details.join(", ")}\n`;
-          response += `Suma: ${total}\n`;
-
-          if (bonus) {
             response += `➕ +${bonus}\n`;
-            total += bonus;
           }
 
           if (multiplier !== 1) {
+            totalDamage *= multiplier;
             response += `✖️ x${multiplier}\n`;
-            total *= multiplier;
           }
 
-          response += `💢 Total: ${total}`;
+          let final = totalDamage;
+
+          if (hit <= 4) final = 0;
+          else if (hit <= 9) final = Math.floor(final / 2);
+          else if (hit >= 20) final *= 2;
+
+          response += `🔥 Daño final: ${final}\n`;
         }
 
-        await sock.sendMessage(msg.key.remoteJid, { text: response });
-        return;
+        return sock.sendMessage(msg.key.remoteJid, { text: response });
       }
 
       // =========================
-      // D20 FIJO (VISUAL)
-      // =========================
-      const fixedD20 = lowerText.match(/d20\s+(\d+)/);
-      if (fixedD20) {
-
-        let r1 = rollDice(20);
-        let r2 = rollDice(20);
-
-        let hit = r1;
-        if (ventaja) hit = Math.max(r1, r2);
-        else if (desventaja) hit = Math.min(r1, r2);
-
-        let beforePrecision = hit;
-        hit = applyPrecision(hit, precision);
-
-        let damage = parseInt(fixedD20[1]);
-
-        response += `🎯 d20\n`;
-        response += `Tirada: ${r1}`;
-        if (ventaja || desventaja) {
-          response += ` / ${r2} → ${beforePrecision}`;
-        }
-        if (precision !== 0) {
-          response += ` + (${precision}×3) = ${hit}`;
-        }
-
-        response += `\nBase daño: ${damage}\n`;
-
-        if (bonus) {
-          response += `➕ +${bonus}\n`;
-          damage += bonus;
-        }
-
-        if (multiplier !== 1) {
-          response += `✖️ x${multiplier}\n`;
-          damage *= multiplier;
-        }
-
-        let beforeHit = damage;
-
-        if (hit <= 4) damage = 0;
-        else if (hit <= 9) damage = Math.floor(damage / 2);
-        else if (hit >= 20) damage *= 2;
-
-        if (beforeHit !== damage) {
-          response += `⚙️ Ajuste d20: ${beforeHit} → ${damage}\n`;
-        }
-
-        response += `🔥 Daño final: ${damage}`;
-
-        await sock.sendMessage(msg.key.remoteJid, { text: response });
-        return;
-      }
-
-      // =========================
-      // TIRADA SIMPLE (VISUAL)
+      // TIRADA SIMPLE
       // =========================
       const match = lowerText.match(/d(\d+)/);
       if (!match) return;
@@ -346,9 +253,8 @@ sock.ev.on("creds.update", () => {
       let r1 = rollDice(sides);
       let r2 = rollDice(sides);
 
-      let final = r1;
-      if (ventaja) final = Math.max(r1, r2);
-      else if (desventaja) final = Math.min(r1, r2);
+      let final = ventaja ? Math.max(r1, r2) :
+                  desventaja ? Math.min(r1, r2) : r1;
 
       if (sides === 20) final = applyPrecision(final, precision);
 
@@ -358,26 +264,14 @@ sock.ev.on("creds.update", () => {
       response += ` → ${final}\n`;
 
       if (sides === 20) {
-        if (precision !== 0) {
-          response += `Precisión: (${precision}×3)\n`;
-        }
         response += getD20Result(final);
       } else if (sides === 4) {
         response += D4_EFFECTS[final - 1];
       } else {
-        let dmg = calculateDamage("d" + sides, final) || 0;
+        let dmg = calculateDamage("d" + sides, final);
 
-        response += `Base: ${dmg}\n`;
-
-        if (bonus) {
-          response += `➕ +${bonus}\n`;
-          dmg += bonus;
-        }
-
-        if (multiplier !== 1) {
-          response += `✖️ x${multiplier}\n`;
-          dmg *= multiplier;
-        }
+        if (bonus) dmg += bonus;
+        if (multiplier !== 1) dmg *= multiplier;
 
         response += `💢 ${dmg}`;
       }
