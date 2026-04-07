@@ -1,24 +1,12 @@
 const { 
   default: makeWASocket, 
-const fs = require("fs");
-
-const SESSION_FILE = "session.json";
-
-async function getAuthState() {
-  if (fs.existsSync(SESSION_FILE)) {
-    return JSON.parse(fs.readFileSync(SESSION_FILE));
-  }
-  return null;
-}
-
-async function saveAuthState(state) {
-  fs.writeFileSync(SESSION_FILE, JSON.stringify(state, null, 2));
-}
+  useMultiFileAuthState,
   fetchLatestBaileysVersion 
 } = require("@whiskeysockets/baileys");
 
 const { Boom } = require("@hapi/boom");
 const qrcode = require("qrcode-terminal");
+const fs = require("fs");
 
 const DAMAGE_TABLES = {
   d6: [5,10,15,20,25,30],
