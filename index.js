@@ -26,10 +26,6 @@ const D4_EFFECTS = [
   "Efectividad completa"
 ];
 
-// =========================
-// FUNCIONES
-// =========================
-
 function rollDice(sides) {
   return Math.floor(Math.random() * sides) + 1;
 }
@@ -44,7 +40,7 @@ function getD20Result(value) {
 
 function calculateDamage(dice, roll) {
   const table = DAMAGE_TABLES[dice];
-  return table ? table[roll - 1] : 0;
+  return table ? table[roll - 1] : null;
 }
 
 function applyPrecision(value, precision) {
@@ -119,7 +115,7 @@ async function startBot() {
       const msg = messages[0];
       if (!msg.message || msg.key.fromMe) return;
 
-      const text =
+ const text =
         msg.message.conversation ||
         msg.message.extendedTextMessage?.text ||
         msg.message.imageMessage?.caption;
@@ -146,9 +142,10 @@ async function startBot() {
       // =========================
       // MONEDA
       // =========================
-      if (lowerText.startsWith("!moneda")) {
+      if (lowerText.startsWith("!moneda") || lowerText.startsWith("!coin")) {
         const result = Math.random() < 0.5 ? "Cara" : "Cruz";
-        return sock.sendMessage(msg.key.remoteJid, { text: `🪙 ${result}` });
+        await sock.sendMessage(msg.key.remoteJid, { text: `🪙 ${result}` });
+        return;
       }
 
       // =========================
@@ -156,13 +153,14 @@ async function startBot() {
       // =========================
       if (lowerText.startsWith("!d100")) {
         const roll = rollDice(100);
-        return sock.sendMessage(msg.key.remoteJid, {
+        await sock.sendMessage(msg.key.remoteJid, { 
           text: `🎲 d100: ${roll}%`
         });
+        return;
       }
 
       // =========================
-      // ATAQUE
+      // ATAQUE (VISUAL COMPLETO)
       // =========================
       if (lowerText.startsWith("!ataque")) {
 
@@ -180,9 +178,10 @@ async function startBot() {
         }
 
         if (!damageDice) {
-          return sock.sendMessage(msg.key.remoteJid, {
+          await sock.sendMessage(msg.key.remoteJid, {
             text: "❌ Usa: !ataque d20 d10"
           });
+          return;
         }
 
         response += `⚔️ ATAQUE\n`;
@@ -192,8 +191,16 @@ async function startBot() {
           let r1 = rollDice(20);
           let r2 = rollDice(20);
 
-          let hit = ventaja ? Math.max(r1, r2) :
-                    desventaja ? Math.min(r1, r2) : r1;
+          let hit = r1;
+          let tipo = "normal";
+
+          if (ventaja) {
+            hit = Math.max(r1, r2);
+            tipo = "ventaja";
+          } else if (desventaja) {
+            hit = Math.min(r1, r2);
+            tipo = "desventaja";
+          }
 
           let beforePrecision = hit;
           hit = applyPrecision(hit, precision);
@@ -201,7 +208,7 @@ async function startBot() {
           response += `\n🎯 Ataque ${i+1}\n`;
           response += `Tirada: ${r1}`;
           if (ventaja || desventaja) {
-            response += ` / ${r2} → ${beforePrecision}`;
+            response += ` / ${r2} (${tipo}) → ${beforePrecision}`;
           }
           if (precision !== 0) {
             response += ` + (${precision}×3) = ${hit}`;
@@ -209,41 +216,155 @@ async function startBot() {
           response += `\nResultado: ${getD20Result(hit)}\n`;
 
           let totalDamage = 0;
-          let details = [];
+          let damageDetails = [];
 
           for (let j = 0; j < damageCount; j++) {
             let roll = rollDice(damageDice);
-            let dmg = calculateDamage("d" + damageDice, roll);
-            details.push(`${roll}→${dmg}`);
+            let dmg = calculateDamage("d" + damageDice, roll) || 0;
+            damageDetails.push(`d${damageDice}:${roll}→${dmg}`);
             totalDamage += dmg;
           }
 
-          response += `💥 Dados: ${details.join(", ")}\n`;
+          response += `💥 Dados: ${damageDetails.join(", ")}\n`;
+          response += `Suma base: ${totalDamage}\n`;
 
           if (bonus) {
+            response += `➕ Bonus: +${bonus}\n`;
             totalDamage += bonus;
-            response += `➕ +${bonus}\n`;
           }
 
           if (multiplier !== 1) {
-            totalDamage *= multiplier;
             response += `✖️ x${multiplier}\n`;
+            totalDamage *= multiplier;
           }
 
-          let final = totalDamage;
+          let beforeHit = totalDamage;
 
-          if (hit <= 4) final = 0;
-          else if (hit <= 9) final = Math.floor(final / 2);
-          else if (hit >= 20) final *= 2;
+          if (hit <= 4) totalDamage = 0;
+          else if (hit <= 9) totalDamage = Math.floor(totalDamage / 2);
+          else if (hit >= 20) totalDamage *= 2;
 
-          response += `🔥 Daño final: ${final}\n`;
+          if (beforeHit !== totalDamage) {
+            response += `⚙️ Ajuste d20: ${beforeHit} → ${totalDamage}\n`;
+          }
+
+          response += `🔥 Daño final: ${totalDamage}\n`;
         }
 
-        return sock.sendMessage(msg.key.remoteJid, { text: response });
+        await sock.sendMessage(msg.key.remoteJid, { text: response });
+        return;
       }
 
       // =========================
-      // TIRADA SIMPLE
+      // MULTI-DADOS (VISUAL)
+      // =========================
+      if (/^!\d+d\d+/.test(lowerText)) {
+
+        const match = lowerText.match(/(\d+)d(\d+)/);
+        const count = parseInt(match[1]);
+        const sides = parseInt(match[2]);
+
+        let rolls = [];
+        let total = 0;
+        let details = [];
+        let d4Texts = [];
+
+        for (let i = 0; i < count; i++) {
+          let roll = rollDice(sides);
+          rolls.push(roll);
+
+          if (sides === 4) {
+            d4Texts.push(D4_EFFECTS[roll - 1]);
+          } else {
+            let dmg = calculateDamage("d" + sides, roll) || 0;
+            details.push(`${roll}→${dmg}`);
+            total += dmg;
+          }
+        }
+
+        response += `🎲 ${count}d${sides}\n`;
+        response += `Tiradas: ${rolls.join(", ")}\n`;
+
+        if (sides === 4) {
+          response += `🎯\n- ${d4Texts.join("\n- ")}`;
+        } else {
+          response += `Detalle: ${details.join(", ")}\n`;
+          response += `Suma: ${total}\n`;
+
+          if (bonus) {
+            response += `➕ +${bonus}\n`;
+            total += bonus;
+          }
+
+          if (multiplier !== 1) {
+            response += `✖️ x${multiplier}\n`;
+            total *= multiplier;
+          }
+
+          response += `💢 Total: ${total}`;
+        }
+
+        await sock.sendMessage(msg.key.remoteJid, { text: response });
+        return;
+      }
+
+      // =========================
+      // D20 FIJO (VISUAL)
+      // =========================
+      const fixedD20 = lowerText.match(/d20\s+(\d+)/);
+      if (fixedD20) {
+
+        let r1 = rollDice(20);
+        let r2 = rollDice(20);
+
+        let hit = r1;
+        if (ventaja) hit = Math.max(r1, r2);
+        else if (desventaja) hit = Math.min(r1, r2);
+
+        let beforePrecision = hit;
+        hit = applyPrecision(hit, precision);
+
+        let damage = parseInt(fixedD20[1]);
+
+        response += `🎯 d20\n`;
+        response += `Tirada: ${r1}`;
+        if (ventaja || desventaja) {
+          response += ` / ${r2} → ${beforePrecision}`;
+        }
+        if (precision !== 0) {
+          response += ` + (${precision}×3) = ${hit}`;
+        }
+
+        response += `\nBase daño: ${damage}\n`;
+
+        if (bonus) {
+          response += `➕ +${bonus}\n`;
+          damage += bonus;
+        }
+
+        if (multiplier !== 1) {
+          response += `✖️ x${multiplier}\n`;
+          damage *= multiplier;
+        }
+
+        let beforeHit = damage;
+
+        if (hit <= 4) damage = 0;
+        else if (hit <= 9) damage = Math.floor(damage / 2);
+        else if (hit >= 20) damage *= 2;
+
+        if (beforeHit !== damage) {
+          response += `⚙️ Ajuste d20: ${beforeHit} → ${damage}\n`;
+        }
+
+        response += `🔥 Daño final: ${damage}`;
+
+        await sock.sendMessage(msg.key.remoteJid, { text: response });
+        return;
+      }
+
+      // =========================
+      // TIRADA SIMPLE (VISUAL)
       // =========================
       const match = lowerText.match(/d(\d+)/);
       if (!match) return;
@@ -253,8 +374,9 @@ async function startBot() {
       let r1 = rollDice(sides);
       let r2 = rollDice(sides);
 
-      let final = ventaja ? Math.max(r1, r2) :
-                  desventaja ? Math.min(r1, r2) : r1;
+      let final = r1;
+      if (ventaja) final = Math.max(r1, r2);
+      else if (desventaja) final = Math.min(r1, r2);
 
       if (sides === 20) final = applyPrecision(final, precision);
 
@@ -264,14 +386,26 @@ async function startBot() {
       response += ` → ${final}\n`;
 
       if (sides === 20) {
+        if (precision !== 0) {
+          response += `Precisión: (${precision}×3)\n`;
+        }
         response += getD20Result(final);
       } else if (sides === 4) {
         response += D4_EFFECTS[final - 1];
       } else {
-        let dmg = calculateDamage("d" + sides, final);
+        let dmg = calculateDamage("d" + sides, final) || 0;
 
-        if (bonus) dmg += bonus;
-        if (multiplier !== 1) dmg *= multiplier;
+        response += `Base: ${dmg}\n`;
+
+        if (bonus) {
+          response += `➕ +${bonus}\n`;
+          dmg += bonus;
+        }
+
+        if (multiplier !== 1) {
+          response += `✖️ x${multiplier}\n`;
+          dmg *= multiplier;
+        }
 
         response += `💢 ${dmg}`;
       }
